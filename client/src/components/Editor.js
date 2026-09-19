@@ -9,6 +9,8 @@ import { ACTIONS } from "../Actions";
 
 function Editor({ socketRef, roomId, onCodeChange }) {
   const editorRef = useRef(null);
+
+  // Initialize CodeMirror editor
   useEffect(() => {
     const init = async () => {
       const editor = CodeMirror.fromTextArea(
@@ -21,16 +23,18 @@ function Editor({ socketRef, roomId, onCodeChange }) {
           lineNumbers: true,
         }
       );
-      // for sync the code
+
       editorRef.current = editor;
 
       editor.setSize(null, "100%");
-      editorRef.current.on("change", (instance, changes) => {
-        // console.log("changes", instance ,  changes );
+
+      editor.on("change", (instance, changes) => {
         const { origin } = changes;
-        const code = instance.getValue(); // code has value which we write
+        const code = instance.getValue();
+
         onCodeChange(code);
-        if (origin !== "setValue") {
+
+        if (origin !== "setValue" && socketRef.current) {
           socketRef.current.emit(ACTIONS.CODE_CHANGE, {
             roomId,
             code,
@@ -40,21 +44,34 @@ function Editor({ socketRef, roomId, onCodeChange }) {
     };
 
     init();
-  }, []);
 
-  // data receive from server
-  useEffect(() => {
-    if (socketRef.current) {
-      socketRef.current.on(ACTIONS.CODE_CHANGE, ({ code }) => {
-        if (code !== null) {
-          editorRef.current.setValue(code);
-        }
-      });
-    }
+    // Cleanup CodeMirror instance
     return () => {
-      socketRef.current.off(ACTIONS.CODE_CHANGE);
+      if (editorRef.current) {
+        editorRef.current.toTextArea();
+        editorRef.current = null;
+      }
     };
-  }, [socketRef.current]);
+  }, [onCodeChange, roomId, socketRef]);
+
+  // Receive code changes from server
+  useEffect(() => {
+    const socket = socketRef.current;
+
+    if (!socket) return;
+
+    const handleCodeChange = ({ code }) => {
+      if (code !== null && editorRef.current) {
+        editorRef.current.setValue(code);
+      }
+    };
+
+    socket.on(ACTIONS.CODE_CHANGE, handleCodeChange);
+
+    return () => {
+      socket.off(ACTIONS.CODE_CHANGE, handleCodeChange);
+    };
+  }, [socketRef]);
 
   return (
     <div style={{ height: "600px" }}>
