@@ -7,62 +7,67 @@ import "codemirror/lib/codemirror.css";
 import CodeMirror from "codemirror";
 import { ACTIONS } from "../Actions";
 
-function Editor({ socketRef, roomId, onCodeChange }) {
+function Editor({ socket, socketRef, roomId, onCodeChange }) {
   const editorRef = useRef(null);
 
-  // Initialize CodeMirror editor
+  // Initialize CodeMirror
   useEffect(() => {
-    const init = async () => {
-      const editor = CodeMirror.fromTextArea(
-        document.getElementById("realtimeEditor"),
-        {
-          mode: { name: "javascript", json: true },
-          theme: "dracula",
-          autoCloseTags: true,
-          autoCloseBrackets: true,
-          lineNumbers: true,
-        }
-      );
+    const textarea = document.getElementById("realtimeEditor");
 
-      editorRef.current = editor;
+    if (!textarea) return;
 
-      editor.setSize(null, "100%");
+    const editor = CodeMirror.fromTextArea(textarea, {
+      mode: { name: "javascript", json: true },
+      theme: "dracula",
+      autoCloseTags: true,
+      autoCloseBrackets: true,
+      lineNumbers: true,
+    });
 
-      editor.on("change", (instance, changes) => {
-        const { origin } = changes;
-        const code = instance.getValue();
+    editorRef.current = editor;
 
-        onCodeChange(code);
+    editor.setSize(null, "100%");
 
-        if (origin !== "setValue" && socketRef.current) {
-          socketRef.current.emit(ACTIONS.CODE_CHANGE, {
-            roomId,
-            code,
-          });
-        }
-      });
+    const handleEditorChange = (instance, changes) => {
+      const { origin } = changes;
+      const code = instance.getValue();
+
+      // Save current code
+      onCodeChange(code);
+
+      // Send changes to other users
+      if (origin !== "setValue" && socketRef.current) {
+        socketRef.current.emit(ACTIONS.CODE_CHANGE, {
+          roomId,
+          code,
+        });
+      }
     };
 
-    init();
+    editor.on("change", handleEditorChange);
 
-    // Cleanup CodeMirror instance
     return () => {
+      editor.off("change", handleEditorChange);
+
       if (editorRef.current) {
         editorRef.current.toTextArea();
         editorRef.current = null;
       }
     };
-  }, [onCodeChange, roomId, socketRef]);
+  }, [roomId, onCodeChange, socketRef]);
 
-  // Receive code changes from server
+  // Receive code changes from other users
   useEffect(() => {
-    const socket = socketRef.current;
-
     if (!socket) return;
 
     const handleCodeChange = ({ code }) => {
       if (code !== null && editorRef.current) {
-        editorRef.current.setValue(code);
+        const currentCode = editorRef.current.getValue();
+
+        // Avoid unnecessary setValue
+        if (currentCode !== code) {
+          editorRef.current.setValue(code);
+        }
       }
     };
 
@@ -71,7 +76,7 @@ function Editor({ socketRef, roomId, onCodeChange }) {
     return () => {
       socket.off(ACTIONS.CODE_CHANGE, handleCodeChange);
     };
-  }, [socketRef]);
+  }, [socket]);
 
   return (
     <div style={{ height: "600px" }}>
