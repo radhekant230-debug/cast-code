@@ -39,7 +39,6 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
-
 const userSocketMap = {};
 const getAllConnectedClients = (roomId) => {
   return Array.from(io.sockets.adapter.rooms.get(roomId) || []).map(
