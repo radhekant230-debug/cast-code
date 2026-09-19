@@ -97,14 +97,13 @@ app.post("/compile", async (req, res) => {
   const { code, language } = req.body;
 
   try {
-    const response = await axios.post("https://api.jdoodle.com/v1/execute", {
-      script: code,
-      language: language,
-      versionIndex: languageConfig[language].versionIndex,
-      clientId: process.env.jDoodle_clientId,
-      clientSecret: process.env.kDoodle_clientSecret,
-    });
-
+   const response = await axios.post(
+  `${process.env.REACT_APP_BACKEND_URL}/compile`,
+  {
+    code: codeRef.current,
+    language: selectedLanguage,
+  }
+);
     res.json(response.data);
   } catch (error) {
     console.error(error);
