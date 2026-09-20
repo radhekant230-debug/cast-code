@@ -1,62 +1,76 @@
 const express = require("express");
-const app = express();
-
 const http = require("http");
-const { Server } = require("socket.io");
-
 const cors = require("cors");
-const axios = require("axios");
+const { Server } = require("socket.io");
+const dotenv = require("dotenv");
 
 const ACTIONS = require("./Actions");
 
-require("dotenv").config();
+dotenv.config();
 
+const app = express();
 const server = http.createServer(app);
 
-// =========================
-// Middleware
-// =========================
+// ==================================================
+// ENVIRONMENT VARIABLES
+// ==================================================
+
+const PORT = process.env.PORT || 5000;
+
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "http://localhost:3000";
+
+console.log("=================================");
+console.log("CodeCast Backend Starting...");
+console.log("Frontend URL:", FRONTEND_URL);
+console.log("Port:", PORT);
+console.log("=================================");
+
+// ==================================================
+// MIDDLEWARE
+// ==================================================
 
 app.use(
   cors({
-    origin:
-      process.env.FRONTEND_URL ||
-      "http://localhost:3000",
+    origin: FRONTEND_URL,
     methods: ["GET", "POST"],
+    credentials: true,
   })
 );
 
 app.use(express.json());
 
-// =========================
-// Socket.IO
-// =========================
+// ==================================================
+// SOCKET.IO
+// ==================================================
 
 const io = new Server(server, {
   cors: {
-    origin:
-      process.env.FRONTEND_URL ||
-      "http://localhost:3000",
+    origin: FRONTEND_URL,
     methods: ["GET", "POST"],
+    credentials: true,
   },
+  transports: ["websocket", "polling"],
 });
 
-// =========================
-// User Socket Map
-// =========================
+// ==================================================
+// USER SOCKET MAP
+// ==================================================
 
 const userSocketMap = {};
 
-// =========================
-// Get Connected Clients
-// =========================
+// ==================================================
+// GET ALL CLIENTS IN ROOM
+// ==================================================
 
-const getAllConnectedClients = (
-  roomId
-) => {
-  return Array.from(
-    io.sockets.adapter.rooms.get(roomId) || []
-  ).map((socketId) => {
+const getAllConnectedClients = (roomId) => {
+  const room = io.sockets.adapter.rooms.get(roomId);
+
+  if (!room) {
+    return [];
+  }
+
+  return Array.from(room).map((socketId) => {
     return {
       socketId,
       username: userSocketMap[socketId],
@@ -64,177 +78,210 @@ const getAllConnectedClients = (
   });
 };
 
-// =========================
-// Socket Connection
-// =========================
+// ==================================================
+// SOCKET CONNECTION
+// ==================================================
 
 io.on("connection", (socket) => {
-  console.log(
-    "Socket connected:",
-    socket.id
-  );
+  console.log("Socket connected:", socket.id);
 
-  // =========================
+  // ==================================================
   // JOIN ROOM
-  // =========================
+  // ==================================================
 
-  socket.on(
-    ACTIONS.JOIN,
-    ({ roomId, username }) => {
-      userSocketMap[socket.id] =
-        username;
+  socket.on(ACTIONS.JOIN, ({ roomId, username }) => {
+    try {
+      userSocketMap[socket.id] = username;
 
       socket.join(roomId);
 
-      const clients =
-        getAllConnectedClients(roomId);
+      const clients = getAllConnectedClients(roomId);
 
       console.log(
         `${username} joined room: ${roomId}`
       );
 
-      clients.forEach(
-        ({ socketId }) => {
-          io.to(socketId).emit(
-            ACTIONS.JOINED,
-            {
-              clients,
-              username,
-              socketId: socket.id,
-            }
-          );
-        }
-      );
+      clients.forEach(({ socketId }) => {
+        io.to(socketId).emit(ACTIONS.JOINED, {
+          clients,
+          username,
+          socketId: socket.id,
+        });
+      });
+    } catch (error) {
+      console.error("JOIN error:", error);
     }
-  );
+  });
 
-  // =========================
+  // ==================================================
   // CODE CHANGE
-  // =========================
+  // ==================================================
 
   socket.on(
     ACTIONS.CODE_CHANGE,
     ({ roomId, code }) => {
-      console.log(
-        `Code changed in room: ${roomId}`
-      );
-
-      socket
-        .in(roomId)
-        .emit(
-          ACTIONS.CODE_CHANGE,
-          { code }
+      try {
+        console.log(
+          `Code changed in room: ${roomId}`
         );
+
+        socket
+          .in(roomId)
+          .emit(ACTIONS.CODE_CHANGE, {
+            code,
+          });
+      } catch (error) {
+        console.error(
+          "CODE_CHANGE error:",
+          error
+        );
+      }
     }
   );
 
-  // =========================
+  // ==================================================
   // SYNC CODE
-  // =========================
+  // ==================================================
 
   socket.on(
     ACTIONS.SYNC_CODE,
     ({ socketId, code }) => {
-      console.log(
-        `Syncing code to socket: ${socketId}`
-      );
+      try {
+        console.log(
+          `Syncing code to socket: ${socketId}`
+        );
 
-      io.to(socketId).emit(
-        ACTIONS.CODE_CHANGE,
-        { code }
-      );
+        io.to(socketId).emit(
+          ACTIONS.CODE_CHANGE,
+          {
+            code,
+          }
+        );
+      } catch (error) {
+        console.error(
+          "SYNC_CODE error:",
+          error
+        );
+      }
     }
   );
 
-  // =========================
-  // DISCONNECT
-  // =========================
+  // ==================================================
+  // DISCONNECTING
+  // ==================================================
 
   socket.on("disconnecting", () => {
-    const rooms = [
-      ...socket.rooms,
-    ];
+    try {
+      const rooms = [...socket.rooms];
 
-    rooms.forEach((roomId) => {
-      socket
-        .in(roomId)
-        .emit(
-          ACTIONS.DISCONNECTED,
-          {
+      rooms.forEach((roomId) => {
+        socket
+          .in(roomId)
+          .emit(ACTIONS.DISCONNECTED, {
             socketId: socket.id,
             username:
-              userSocketMap[
-                socket.id
-              ],
-          }
-        );
-    });
+              userSocketMap[socket.id],
+          });
+      });
 
-    delete userSocketMap[
-      socket.id
-    ];
+      delete userSocketMap[socket.id];
 
-    console.log(
-      "Socket disconnected:",
-      socket.id
-    );
+      console.log(
+        "Socket disconnected:",
+        socket.id
+      );
+    } catch (error) {
+      console.error(
+        "DISCONNECT error:",
+        error
+      );
+    }
   });
 });
 
-// =========================
-// Health Check
-// =========================
+// ==================================================
+// HEALTH CHECK
+// ==================================================
 
 app.get("/", (req, res) => {
-  res.json({
-    message:
-      "CodeCast server is running",
+  res.status(200).json({
+    success: true,
+    message: "CodeCast server is running",
   });
 });
 
-// =========================
-// Compile Endpoint
-// =========================
+// ==================================================
+// SOCKET.IO HEALTH CHECK
+// ==================================================
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Server and Socket.IO are running",
+    connectedUsers: io.engine.clientsCount,
+  });
+});
+
+// ==================================================
+// COMPILE ENDPOINT
+// ==================================================
 
 app.post("/compile", async (req, res) => {
-  const { code, language } =
-    req.body;
+  try {
+    const { code, language } = req.body;
 
-  if (!code) {
-    return res.status(400).json({
-      error: "Code is required",
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        error: "Code is required",
+      });
+    }
+
+    // Add your compiler API here later.
+
+    return res.status(501).json({
+      success: false,
+      error:
+        "Compiler API is not configured yet.",
+      language,
+    });
+  } catch (error) {
+    console.error(
+      "Compile error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      error: "Internal server error",
     });
   }
+});
 
-  /*
-   * IMPORTANT:
-   * Add your actual compiler API here.
-   *
-   * Do NOT call:
-   * /compile -> /compile
-   * because that creates recursion.
-   */
+// ==================================================
+// 404 HANDLER
+// ==================================================
 
-  return res.status(501).json({
-    error:
-      "Compiler API is not configured yet.",
-    language,
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "Route not found",
   });
 });
 
-// =========================
-// Start Server
-// =========================
-
-const PORT =
-  process.env.PORT || 5000;
+// ==================================================
+// START SERVER
+// ==================================================
 
 server.listen(
   PORT,
   "0.0.0.0",
   () => {
     console.log(
-      `Server is running on port ${PORT}`
+      `CodeCast server running on port ${PORT}`
+    );
+    console.log(
+      `Frontend allowed: ${FRONTEND_URL}`
     );
   }
 );
