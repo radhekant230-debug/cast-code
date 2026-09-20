@@ -50,7 +50,12 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
     credentials: true,
   },
+
   transports: ["websocket", "polling"],
+
+  // Reconnection settings
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 // ==================================================
@@ -60,7 +65,7 @@ const io = new Server(server, {
 const userSocketMap = {};
 
 // ==================================================
-// GET ALL CLIENTS IN ROOM
+// GET ALL CONNECTED CLIENTS IN ROOM
 // ==================================================
 
 const getAllConnectedClients = (roomId) => {
@@ -70,12 +75,10 @@ const getAllConnectedClients = (roomId) => {
     return [];
   }
 
-  return Array.from(room).map((socketId) => {
-    return {
-      socketId,
-      username: userSocketMap[socketId],
-    };
-  });
+  return Array.from(room).map((socketId) => ({
+    socketId,
+    username: userSocketMap[socketId] || "Unknown User",
+  }));
 };
 
 // ==================================================
@@ -89,22 +92,42 @@ io.on("connection", (socket) => {
   // JOIN ROOM
   // ==================================================
 
-  socket.on(ACTIONS.JOIN, ({ roomId, username }) => {
+  socket.on(ACTIONS.JOIN, (data) => {
     try {
-      userSocketMap[socket.id] = username;
+      const { roomId, username } = data || {};
 
-      socket.join(roomId);
+      // Validate JOIN data
+      if (
+        typeof roomId !== "string" ||
+        !roomId.trim() ||
+        typeof username !== "string" ||
+        !username.trim()
+      ) {
+        console.error("Invalid JOIN request:", data);
+        return;
+      }
 
-      const clients = getAllConnectedClients(roomId);
+      const cleanRoomId = roomId.trim();
+      const cleanUsername = username.trim();
+
+      // Save user
+      userSocketMap[socket.id] = cleanUsername;
+
+      // Join room
+      socket.join(cleanRoomId);
+
+      // Get current clients
+      const clients = getAllConnectedClients(cleanRoomId);
 
       console.log(
-        `${username} joined room: ${roomId}`
+        `${cleanUsername} joined room: ${cleanRoomId}`
       );
 
+      // Notify all users in room
       clients.forEach(({ socketId }) => {
         io.to(socketId).emit(ACTIONS.JOINED, {
           clients,
-          username,
+          username: cleanUsername,
           socketId: socket.id,
         });
       });
@@ -117,54 +140,103 @@ io.on("connection", (socket) => {
   // CODE CHANGE
   // ==================================================
 
-  socket.on(
-    ACTIONS.CODE_CHANGE,
-    ({ roomId, code }) => {
-      try {
-        console.log(
-          `Code changed in room: ${roomId}`
-        );
+  socket.on(ACTIONS.CODE_CHANGE, (data) => {
+    try {
+      const { roomId, code } = data || {};
 
-        socket
-          .in(roomId)
-          .emit(ACTIONS.CODE_CHANGE, {
-            code,
-          });
-      } catch (error) {
-        console.error(
-          "CODE_CHANGE error:",
-          error
-        );
+      // Validate code change
+      if (
+        typeof roomId !== "string" ||
+        !roomId.trim() ||
+        typeof code !== "string"
+      ) {
+        console.error("Invalid CODE_CHANGE request:", data);
+        return;
       }
+
+      const cleanRoomId = roomId.trim();
+
+      console.log(
+        `Code changed in room: ${cleanRoomId}`
+      );
+
+      // Send code to everyone except sender
+      socket.in(cleanRoomId).emit(ACTIONS.CODE_CHANGE, {
+        code,
+      });
+    } catch (error) {
+      console.error("CODE_CHANGE error:", error);
     }
-  );
+  });
 
   // ==================================================
   // SYNC CODE
   // ==================================================
 
-  socket.on(
-    ACTIONS.SYNC_CODE,
-    ({ socketId, code }) => {
-      try {
-        console.log(
-          `Syncing code to socket: ${socketId}`
-        );
+  socket.on(ACTIONS.SYNC_CODE, (data) => {
+    try {
+      const { socketId, code } = data || {};
 
-        io.to(socketId).emit(
-          ACTIONS.CODE_CHANGE,
-          {
-            code,
-          }
-        );
-      } catch (error) {
-        console.error(
-          "SYNC_CODE error:",
-          error
-        );
+      // Validate sync request
+      if (
+        typeof socketId !== "string" ||
+        !socketId.trim() ||
+        typeof code !== "string"
+      ) {
+        console.error("Invalid SYNC_CODE request:", data);
+        return;
       }
+
+      console.log(
+        `Syncing code to socket: ${socketId}`
+      );
+
+      // Send current code to newly joined user
+      io.to(socketId).emit(ACTIONS.CODE_CHANGE, {
+        code,
+      });
+    } catch (error) {
+      console.error("SYNC_CODE error:", error);
     }
-  );
+  });
+
+  // ==================================================
+  // LEAVE ROOM
+  // ==================================================
+
+  socket.on(ACTIONS.LEAVE, (data) => {
+    try {
+      const { roomId } = data || {};
+
+      if (
+        typeof roomId !== "string" ||
+        !roomId.trim()
+      ) {
+        return;
+      }
+
+      const cleanRoomId = roomId.trim();
+      const username = userSocketMap[socket.id];
+
+      // Notify other users
+      socket.in(cleanRoomId).emit(
+        ACTIONS.DISCONNECTED,
+        {
+          socketId: socket.id,
+          username,
+        }
+      );
+
+      // Leave room
+      socket.leave(cleanRoomId);
+
+      console.log(
+        `${username || "User"} left room: ${cleanRoomId}`
+      );
+    } catch (error) {
+      console.error("LEAVE error:", error);
+    }
+  });
 
   // ==================================================
   // DISCONNECTING
@@ -173,17 +245,30 @@ io.on("connection", (socket) => {
   socket.on("disconnecting", () => {
     try {
       const rooms = [...socket.rooms];
+      const username = userSocketMap[socket.id];
 
       rooms.forEach((roomId) => {
-        socket
-          .in(roomId)
-          .emit(ACTIONS.DISCONNECTED, {
+        // Socket.IO automatically puts every socket
+        // into a private room with its own socket.id.
+        // We don't want to treat that as a CodeCast room.
+        if (roomId === socket.id) {
+          return;
+        }
+
+        socket.in(roomId).emit(
+          ACTIONS.DISCONNECTED,
+          {
             socketId: socket.id,
-            username:
-              userSocketMap[socket.id],
-          });
+            username,
+          }
+        );
+
+        console.log(
+          `${username || "User"} disconnected from room: ${roomId}`
+        );
       });
 
+      // Remove user from map
       delete userSocketMap[socket.id];
 
       console.log(
@@ -197,10 +282,21 @@ io.on("connection", (socket) => {
       );
     }
   });
+
+  // ==================================================
+  // SOCKET ERROR
+  // ==================================================
+
+  socket.on("error", (error) => {
+    console.error(
+      `Socket error (${socket.id}):`,
+      error
+    );
+  });
 });
 
 // ==================================================
-// HEALTH CHECK
+// BASIC HEALTH CHECK
 // ==================================================
 
 app.get("/", (req, res) => {
@@ -228,28 +324,40 @@ app.get("/health", (req, res) => {
 
 app.post("/compile", async (req, res) => {
   try {
-    const { code, language } = req.body;
+    const { code, language } = req.body || {};
 
-    if (!code) {
+    if (
+      typeof code !== "string" ||
+      !code.trim()
+    ) {
       return res.status(400).json({
         success: false,
         error: "Code is required",
       });
     }
 
-    // Add your compiler API here later.
+    if (
+      typeof language !== "string" ||
+      !language.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Language is required",
+      });
+    }
+
+    // ==================================================
+    // COMPILER API
+    // ==================================================
+    // Add Judge0 / another compiler API here later.
 
     return res.status(501).json({
       success: false,
-      error:
-        "Compiler API is not configured yet.",
+      error: "Compiler API is not configured yet.",
       language,
     });
   } catch (error) {
-    console.error(
-      "Compile error:",
-      error
-    );
+    console.error("Compile error:", error);
 
     return res.status(500).json({
       success: false,
@@ -270,18 +378,29 @@ app.use((req, res) => {
 });
 
 // ==================================================
+// GLOBAL ERROR HANDLER
+// ==================================================
+
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+
+  res.status(500).json({
+    success: false,
+    error: "Internal server error",
+  });
+});
+
+// ==================================================
 // START SERVER
 // ==================================================
 
-server.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `CodeCast server running on port ${PORT}`
-    );
-    console.log(
-      `Frontend allowed: ${FRONTEND_URL}`
-    );
-  }
-);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("=================================");
+  console.log(
+    `CodeCast server running on port ${PORT}`
+  );
+  console.log(
+    `Frontend allowed: ${FRONTEND_URL}`
+  );
+  console.log("=================================");
+});
