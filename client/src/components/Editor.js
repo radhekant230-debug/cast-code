@@ -9,33 +9,39 @@ import { ACTIONS } from "../Actions";
 
 function Editor({ socket, socketRef, roomId, onCodeChange }) {
   const editorRef = useRef(null);
+  const textareaRef = useRef(null);
 
   // Initialize CodeMirror
   useEffect(() => {
-    const textarea = document.getElementById("realtimeEditor");
+    if (!textareaRef.current) return;
 
-    if (!textarea) return;
-
-    const editor = CodeMirror.fromTextArea(textarea, {
-      mode: { name: "javascript", json: true },
+    const editor = CodeMirror.fromTextArea(textareaRef.current, {
+      mode: {
+        name: "javascript",
+        json: true,
+      },
       theme: "dracula",
       autoCloseTags: true,
       autoCloseBrackets: true,
       lineNumbers: true,
+      lineWrapping: true,
+      tabSize: 2,
     });
 
     editorRef.current = editor;
 
-    editor.setSize(null, "100%");
+    editor.setSize("100%", "100%");
 
     const handleEditorChange = (instance, changes) => {
       const { origin } = changes;
       const code = instance.getValue();
 
-      // Save current code
+      // Save current code locally
       onCodeChange(code);
 
-      // Send changes to other users
+      // Send code changes to other users
+      // "setValue" means code came from another user,
+      // so don't send it back again.
       if (origin !== "setValue" && socketRef.current) {
         socketRef.current.emit(ACTIONS.CODE_CHANGE, {
           roomId,
@@ -61,13 +67,14 @@ function Editor({ socket, socketRef, roomId, onCodeChange }) {
     if (!socket) return;
 
     const handleCodeChange = ({ code }) => {
-      if (code !== null && editorRef.current) {
-        const currentCode = editorRef.current.getValue();
+      if (typeof code !== "string") return;
+      if (!editorRef.current) return;
 
-        // Avoid unnecessary setValue
-        if (currentCode !== code) {
-          editorRef.current.setValue(code);
-        }
+      const currentCode = editorRef.current.getValue();
+
+      // Avoid unnecessary updates
+      if (currentCode !== code) {
+        editorRef.current.setValue(code);
       }
     };
 
@@ -79,8 +86,17 @@ function Editor({ socket, socketRef, roomId, onCodeChange }) {
   }, [socket]);
 
   return (
-    <div style={{ height: "600px" }}>
-      <textarea id="realtimeEditor"></textarea>
+    <div
+      style={{
+        height: "600px",
+        width: "100%",
+      }}
+    >
+      <textarea
+        ref={textareaRef}
+        id="realtimeEditor"
+        defaultValue=""
+      />
     </div>
   );
 }
