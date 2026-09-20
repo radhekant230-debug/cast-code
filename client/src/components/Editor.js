@@ -1,406 +1,81 @@
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const { Server } = require("socket.io");
-const dotenv = require("dotenv");
+import React, { useEffect, useRef } from "react";
+import CodeMirror from "codemirror";
 
-const ACTIONS = require("./Actions");
+import "codemirror/lib/codemirror.css";
+import "codemirror/theme/dracula.css";
+import "codemirror/mode/javascript/javascript";
+import "codemirror/mode/xml/xml";
+import "codemirror/mode/clike/clike";
+import "codemirror/mode/python/python";
+import "codemirror/addon/edit/closebrackets";
+import "codemirror/addon/edit/closetag";
 
-dotenv.config();
+import { ACTIONS } from "../Actions";
 
-const app = express();
-const server = http.createServer(app);
+function Editor({ socket, socketRef, roomId, onCodeChange }) {
+  const editorRef = useRef(null);
+  const textareaRef = useRef(null);
 
-// ==================================================
-// ENVIRONMENT VARIABLES
-// ==================================================
+  /*
+   * Initialize CodeMirror once on mount.
+   */
+  useEffect(() => {
+    editorRef.current = CodeMirror.fromTextArea(textareaRef.current, {
+      mode: { name: "javascript", json: true },
+      theme: "dracula",
+      autoCloseTags: true,
+      autoCloseBrackets: true,
+      lineNumbers: true,
+    });
 
-const PORT = process.env.PORT || 5000;
+    editorRef.current.setSize(null, "100%");
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || "http://localhost:3000";
+    editorRef.current.on("change", (instance, changes) => {
+      const { origin } = changes;
+      const code = instance.getValue();
 
-console.log("=================================");
-console.log("CodeCast Backend Starting...");
-console.log("Frontend URL:", FRONTEND_URL);
-console.log("Port:", PORT);
-console.log("=================================");
+      onCodeChange(code);
 
-// ==================================================
-// MIDDLEWARE
-// ==================================================
-
-app.use(
-  cors({
-    origin: FRONTEND_URL,
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
-
-app.use(express.json());
-
-// ==================================================
-// SOCKET.IO
-// ==================================================
-
-const io = new Server(server, {
-  cors: {
-    origin: FRONTEND_URL,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-
-  transports: ["websocket", "polling"],
-
-  // Reconnection settings
-  pingTimeout: 60000,
-  pingInterval: 25000,
-});
-
-// ==================================================
-// USER SOCKET MAP
-// ==================================================
-
-const userSocketMap = {};
-
-// ==================================================
-// GET ALL CONNECTED CLIENTS IN ROOM
-// ==================================================
-
-const getAllConnectedClients = (roomId) => {
-  const room = io.sockets.adapter.rooms.get(roomId);
-
-  if (!room) {
-    return [];
-  }
-
-  return Array.from(room).map((socketId) => ({
-    socketId,
-    username: userSocketMap[socketId] || "Unknown User",
-  }));
-};
-
-// ==================================================
-// SOCKET CONNECTION
-// ==================================================
-
-io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
-
-  // ==================================================
-  // JOIN ROOM
-  // ==================================================
-
-  socket.on(ACTIONS.JOIN, (data) => {
-    try {
-      const { roomId, username } = data || {};
-
-      // Validate JOIN data
-      if (
-        typeof roomId !== "string" ||
-        !roomId.trim() ||
-        typeof username !== "string" ||
-        !username.trim()
-      ) {
-        console.error("Invalid JOIN request:", data);
-        return;
-      }
-
-      const cleanRoomId = roomId.trim();
-      const cleanUsername = username.trim();
-
-      // Save user
-      userSocketMap[socket.id] = cleanUsername;
-
-      // Join room
-      socket.join(cleanRoomId);
-
-      // Get current clients
-      const clients = getAllConnectedClients(cleanRoomId);
-
-      console.log(
-        `${cleanUsername} joined room: ${cleanRoomId}`
-      );
-
-      // Notify all users in room
-      clients.forEach(({ socketId }) => {
-        io.to(socketId).emit(ACTIONS.JOINED, {
-          clients,
-          username: cleanUsername,
-          socketId: socket.id,
+      // Avoid re-broadcasting changes that came from setValue()
+      // (i.e. changes applied by an incoming CODE_CHANGE event).
+      if (origin !== "setValue" && socketRef.current) {
+        socketRef.current.emit(ACTIONS.CODE_CHANGE, {
+          roomId,
+          code,
         });
-      });
-    } catch (error) {
-      console.error("JOIN error:", error);
-    }
-  });
-
-  // ==================================================
-  // CODE CHANGE
-  // ==================================================
-
-  socket.on(ACTIONS.CODE_CHANGE, (data) => {
-    try {
-      const { roomId, code } = data || {};
-
-      // Validate code change
-      if (
-        typeof roomId !== "string" ||
-        !roomId.trim() ||
-        typeof code !== "string"
-      ) {
-        console.error("Invalid CODE_CHANGE request:", data);
-        return;
       }
-
-      const cleanRoomId = roomId.trim();
-
-      console.log(
-        `Code changed in room: ${cleanRoomId}`
-      );
-
-      // Send code to everyone except sender
-      socket.in(cleanRoomId).emit(ACTIONS.CODE_CHANGE, {
-        code,
-      });
-    } catch (error) {
-      console.error("CODE_CHANGE error:", error);
-    }
-  });
-
-  // ==================================================
-  // SYNC CODE
-  // ==================================================
-
-  socket.on(ACTIONS.SYNC_CODE, (data) => {
-    try {
-      const { socketId, code } = data || {};
-
-      // Validate sync request
-      if (
-        typeof socketId !== "string" ||
-        !socketId.trim() ||
-        typeof code !== "string"
-      ) {
-        console.error("Invalid SYNC_CODE request:", data);
-        return;
-      }
-
-      console.log(
-        `Syncing code to socket: ${socketId}`
-      );
-
-      // Send current code to newly joined user
-      io.to(socketId).emit(ACTIONS.CODE_CHANGE, {
-        code,
-      });
-    } catch (error) {
-      console.error("SYNC_CODE error:", error);
-    }
-  });
-
-  // ==================================================
-  // LEAVE ROOM
-  // ==================================================
-
-  socket.on(ACTIONS.LEAVE, (data) => {
-    try {
-      const { roomId } = data || {};
-
-      if (
-        typeof roomId !== "string" ||
-        !roomId.trim()
-      ) {
-        return;
-      }
-
-      const cleanRoomId = roomId.trim();
-      const username = userSocketMap[socket.id];
-
-      // Notify other users
-      socket.in(cleanRoomId).emit(
-        ACTIONS.DISCONNECTED,
-        {
-          socketId: socket.id,
-          username,
-        }
-      );
-
-      // Leave room
-      socket.leave(cleanRoomId);
-
-      console.log(
-        `${username || "User"} left room: ${cleanRoomId}`
-      );
-    } catch (error) {
-      console.error("LEAVE error:", error);
-    }
-  });
-
-  // ==================================================
-  // DISCONNECTING
-  // ==================================================
-
-  socket.on("disconnecting", () => {
-    try {
-      const rooms = [...socket.rooms];
-      const username = userSocketMap[socket.id];
-
-      rooms.forEach((roomId) => {
-        // Socket.IO automatically puts every socket
-        // into a private room with its own socket.id.
-        // We don't want to treat that as a CodeCast room.
-        if (roomId === socket.id) {
-          return;
-        }
-
-        socket.in(roomId).emit(
-          ACTIONS.DISCONNECTED,
-          {
-            socketId: socket.id,
-            username,
-          }
-        );
-
-        console.log(
-          `${username || "User"} disconnected from room: ${roomId}`
-        );
-      });
-
-      // Remove user from map
-      delete userSocketMap[socket.id];
-
-      console.log(
-        "Socket disconnected:",
-        socket.id
-      );
-    } catch (error) {
-      console.error(
-        "DISCONNECT error:",
-        error
-      );
-    }
-  });
-
-  // ==================================================
-  // SOCKET ERROR
-  // ==================================================
-
-  socket.on("error", (error) => {
-    console.error(
-      `Socket error (${socket.id}):`,
-      error
-    );
-  });
-});
-
-// ==================================================
-// BASIC HEALTH CHECK
-// ==================================================
-
-app.get("/", (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "CodeCast server is running",
-  });
-});
-
-// ==================================================
-// SOCKET.IO HEALTH CHECK
-// ==================================================
-
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "Server and Socket.IO are running",
-    connectedUsers: io.engine.clientsCount,
-  });
-});
-
-// ==================================================
-// COMPILE ENDPOINT
-// ==================================================
-
-app.post("/compile", async (req, res) => {
-  try {
-    const { code, language } = req.body || {};
-
-    if (
-      typeof code !== "string" ||
-      !code.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: "Code is required",
-      });
-    }
-
-    if (
-      typeof language !== "string" ||
-      !language.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: "Language is required",
-      });
-    }
-
-    // ==================================================
-    // COMPILER API
-    // ==================================================
-    // Add Judge0 / another compiler API here later.
-
-    return res.status(501).json({
-      success: false,
-      error: "Compiler API is not configured yet.",
-      language,
     });
-  } catch (error) {
-    console.error("Compile error:", error);
 
-    return res.status(500).json({
-      success: false,
-      error: "Internal server error",
-    });
-  }
-});
+    return () => {
+      editorRef.current.toTextArea();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-// ==================================================
-// 404 HANDLER
-// ==================================================
+  /*
+   * Listen for remote code changes.
+   */
+  useEffect(() => {
+    if (!socket) return;
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "Route not found",
-  });
-});
+    const handleCodeChange = ({ code }) => {
+      if (code !== null && code !== editorRef.current.getValue()) {
+        editorRef.current.setValue(code);
+      }
+    };
 
-// ==================================================
-// GLOBAL ERROR HANDLER
-// ==================================================
+    socket.on(ACTIONS.CODE_CHANGE, handleCodeChange);
 
-app.use((err, req, res, next) => {
-  console.error("Server error:", err);
+    return () => {
+      socket.off(ACTIONS.CODE_CHANGE, handleCodeChange);
+    };
+  }, [socket]);
 
-  res.status(500).json({
-    success: false,
-    error: "Internal server error",
-  });
-});
-
-// ==================================================
-// START SERVER
-// ==================================================
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("=================================");
-  console.log(
-    `CodeCast server running on port ${PORT}`
+  return (
+    <div className="codemirror h-100">
+      <textarea ref={textareaRef} id="realtimeEditor"></textarea>
+    </div>
   );
-  console.log(
-    `Frontend allowed: ${FRONTEND_URL}`
-  );
-  console.log("=================================");
-});
+}
+
+export default Editor;
